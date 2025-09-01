@@ -37,6 +37,10 @@ app.use(cors());
 // Body parser middleware to handle JSON data
 app.use(express.json());
 
+app.get("/", (req, res) => {
+  res.send("Backend is running 🚀");
+});
+
 // Main API routes
 app.use('/api/users', userRoutes);
 app.use('/api/transactions', transactionRoutes);
