@@ -45,10 +45,19 @@ const createTransaction = async (req, res) => {
             buyer.balance -= amount;
             await buyer.save({ session });
 
-            // Step 2: Calculate and distribute commissions
+            // Step 2: Create a new transaction record FIRST
+            const transaction = new Transaction({
+                receiver: buyerId,
+                type: "buy",
+                amount: -amount, // Negative amount since money is going out
+            });
+            await transaction.save({ session });
+
+            // Step 3: Calculate and distribute commissions WITH transaction ID
             const totalCommission = amount * 0.20; // 20% commission on the total amount
 
             let currentUserId = buyerId;
+            const commissionsToCreate = []; // Store all commissions to create in batch
             
             // Loop through the referral chain up to 10 levels
             for (let level = 1; level <= 10; level++) {
@@ -76,45 +85,35 @@ const createTransaction = async (req, res) => {
                     referrerUser.balance += commissionAmount;
                     await referrerUser.save({ session });
 
-                    // Persist commission row in new collection
-                    await Commission.create([
-                        {
-                            sender: buyerId,
-                            receiver: referrerUser._id,
-                            transaction: null, // will be updated after transaction is created
-                            level: level,
-                            amount: commissionAmount,
-                        }
-                    ], { session });
+                    // Add commission to batch array
+                    commissionsToCreate.push({
+                        sender: buyerId,
+                        receiver: referrerUser._id,
+                        transaction: transaction._id, // NOW we have transaction ID
+                        level: level,
+                        amount: commissionAmount,
+                    });
                 }
 
                 // Move to the next level in the chain
                 currentUserId = referrerUser._id;
             }
 
-            // Step 3: Create a new transaction record
-            const transaction = new Transaction({
-                receiver: buyerId,
-                type: "buy", // ✅ mark transaction as "buy"
-                amount: -amount, // ✅ Negative amount since money is going out
-            });
-            await transaction.save({ session });
-
-            // Step 4: Backfill the transaction id into the created Commission rows
-            await Commission.updateMany(
-                { sender: buyerId, transaction: null },
-                { $set: { transaction: transaction._id } },
-                { session }
-            );
+            // Step 4: Create all commissions in one batch with transaction ID
+            if (commissionsToCreate.length > 0) {
+                await Commission.create(commissionsToCreate, { session });
+            }
 
             // Send a success response after the transaction is committed
             res.status(201).json({
                 message: 'Transaction completed successfully and commissions have been distributed.',
                 buyerBalance: buyer.balance,
                 transaction,
+                commissionsCreated: commissionsToCreate.length
             });
         });
     } catch (error) {
+        console.error('Transaction creation error:', error);
         // If an error occurs, the transaction will be aborted automatically
         res.status(500).json({ message: error.message });
     } finally {
@@ -131,7 +130,7 @@ const getRecentTransactions = async (req, res) => {
         // Fetch last 4 transactions for the logged-in user
         const transactions = await Transaction.find({ receiver: req.user._id })
             .sort({ createdAt: -1 })
-            .limit(4) // ✅ Only show recent 4 transactions
+            .limit(4) // Only show recent 4 transactions
             .select('type amount createdAt') // Select only needed fields
             .lean(); // For better performance
 
@@ -141,7 +140,5 @@ const getRecentTransactions = async (req, res) => {
         res.status(500).json({ message: "Server error" });
     }
 };
-
-
 
 module.exports = { createTransaction, getRecentTransactions };
