@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const Commission = require('../models/Commission');
 const moment = require('moment');
 
 // @desc    Get today's commission summary for dashboard
@@ -14,18 +15,17 @@ const getTodayCommissionSummary = async (req, res) => {
         const endOfToday = moment().endOf('day').toDate();
 
         // Calculate today's total commission
-        const todayCommissionData = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        const todayCommissionData = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfToday, $lte: endOfToday }
                 }
             },
             {
                 $group: {
                     _id: null,
-                    totalCommission: { $sum: "$commissions.commissionAmount" },
+                    totalCommission: { $sum: "$amount" },
                     transactionCount: { $sum: 1 }
                 }
             }
@@ -38,18 +38,17 @@ const getTodayCommissionSummary = async (req, res) => {
         const startOfYesterday = moment().subtract(1, 'day').startOf('day').toDate();
         const endOfYesterday = moment().subtract(1, 'day').endOf('day').toDate();
 
-        const yesterdayCommissionData = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        const yesterdayCommissionData = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfYesterday, $lte: endOfYesterday }
                 }
             },
             {
                 $group: {
                     _id: null,
-                    totalCommission: { $sum: "$commissions.commissionAmount" }
+                    totalCommission: { $sum: "$amount" }
                 }
             }
         ]);
@@ -96,18 +95,17 @@ const getTodayDetailedCommissions = async (req, res) => {
         const endOfToday = moment().endOf('day').toDate();
 
         // 1. Get today's total commission
-        const todayCommissionData = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        const todayCommissionData = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfToday, $lte: endOfToday }
                 }
             },
             {
                 $group: {
                     _id: null,
-                    totalCommission: { $sum: "$commissions.commissionAmount" },
+                    totalCommission: { $sum: "$amount" },
                     transactionCount: { $sum: 1 }
                 }
             }
@@ -117,20 +115,19 @@ const getTodayDetailedCommissions = async (req, res) => {
         const totalTransactions = todayCommissionData.length > 0 ? todayCommissionData[0].transactionCount : 0;
 
         // 2. Get commission breakdown by user (who made the purchase that generated commission)
-        const commissionByUsers = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        const commissionByUsers = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfToday, $lte: endOfToday }
                 }
             },
             {
                 $group: {
-                    _id: "$buyer", // Group by the buyer who made the purchase
-                    totalCommissionFromUser: { $sum: "$commissions.commissionAmount" },
+                    _id: "$sender", // Group by the user who generated commission
+                    totalCommissionFromUser: { $sum: "$amount" },
                     transactionCount: { $sum: 1 },
-                    levels: { $push: "$commissions.level" } // Track which levels
+                    levels: { $push: "$level" }
                 }
             },
             { $sort: { totalCommissionFromUser: -1 } },
@@ -139,16 +136,16 @@ const getTodayDetailedCommissions = async (req, res) => {
                     from: "users",
                     localField: "_id",
                     foreignField: "_id",
-                    as: "buyerInfo"
+                    as: "senderInfo"
                 }
             },
-            { $unwind: "$buyerInfo" },
+            { $unwind: "$senderInfo" },
             {
                 $project: {
-                    buyerId: "$_id",
-                    buyerName: "$buyerInfo.name",
-                    buyerEmail: "$buyerInfo.email",
-                    buyerReferralCode: "$buyerInfo.referralCode",
+                    senderId: "$_id",
+                    senderName: "$senderInfo.name",
+                    senderEmail: "$senderInfo.email",
+                    senderReferralCode: "$senderInfo.referralCode",
                     totalCommissionFromUser: 1,
                     transactionCount: 1,
                     levels: 1,
@@ -158,18 +155,17 @@ const getTodayDetailedCommissions = async (req, res) => {
         ]);
 
         // 3. Get hourly breakdown for chart
-        const hourlyCommissions = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        const hourlyCommissions = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfToday, $lte: endOfToday }
                 }
             },
             {
                 $group: {
                     _id: { $hour: "$createdAt" },
-                    totalCommission: { $sum: "$commissions.commissionAmount" },
+                    totalCommission: { $sum: "$amount" },
                     transactionCount: { $sum: 1 }
                 }
             },
@@ -191,18 +187,17 @@ const getTodayDetailedCommissions = async (req, res) => {
         ]);
 
         // 4. Get commission breakdown by level
-        const commissionByLevel = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        const commissionByLevel = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfToday, $lte: endOfToday }
                 }
             },
             {
                 $group: {
-                    _id: "$commissions.level",
-                    totalCommission: { $sum: "$commissions.commissionAmount" },
+                    _id: "$level",
+                    totalCommission: { $sum: "$amount" },
                     transactionCount: { $sum: 1 }
                 }
             },
@@ -210,29 +205,25 @@ const getTodayDetailedCommissions = async (req, res) => {
         ]);
 
         // 5. Get recent transactions that generated commission
-        const recentCommissionTransactions = await Transaction.find({
-            "commissions.user": userId,
+        const recentCommissionTransactions = await Commission.find({
+            receiver: userId,
             createdAt: { $gte: startOfToday, $lte: endOfToday }
         })
-        .populate('buyer', 'name email referralCode')
+        .populate('sender', 'name email referralCode')
+        .populate('transaction', 'amount type createdAt')
         .sort({ createdAt: -1 })
         .limit(10)
-        .select('buyer amount totalCommission commissions createdAt type')
         .lean();
 
-        // Filter to show only the commission relevant to this user
-        const processedRecentTransactions = recentCommissionTransactions.map(transaction => {
-            const userCommission = transaction.commissions.find(comm => comm.user.toString() === userId.toString());
-            return {
-                _id: transaction._id,
-                buyer: transaction.buyer,
-                purchaseAmount: Math.abs(transaction.amount),
-                myCommission: userCommission ? userCommission.commissionAmount : 0,
-                level: userCommission ? userCommission.level : 0,
-                createdAt: transaction.createdAt,
-                type: transaction.type
-            };
-        });
+        const processedRecentTransactions = recentCommissionTransactions.map(item => ({
+            _id: item.transaction?._id || item._id,
+            sender: item.sender,
+            purchaseAmount: item.transaction ? Math.abs(item.transaction.amount) : 0,
+            myCommission: item.amount,
+            level: item.level,
+            createdAt: item.createdAt,
+            type: item.transaction ? item.transaction.type : 'buy',
+        }));
 
         res.json({
             summary: {

@@ -1,4 +1,5 @@
 const Transaction = require('../models/Transaction');
+const Commission = require('../models/Commission');
 const User = require('../models/User');
 const mongoose = require('mongoose');
 
@@ -47,7 +48,6 @@ const createTransaction = async (req, res) => {
             // Step 2: Calculate and distribute commissions
             const totalCommission = amount * 0.20; // 20% commission on the total amount
 
-            let commissionsArray = [];
             let currentUserId = buyerId;
             
             // Loop through the referral chain up to 10 levels
@@ -76,12 +76,16 @@ const createTransaction = async (req, res) => {
                     referrerUser.balance += commissionAmount;
                     await referrerUser.save({ session });
 
-                    // Add commission details to the array
-                    commissionsArray.push({
-                        level: level,
-                        user: referrerUser._id,
-                        commissionAmount: commissionAmount,
-                    });
+                    // Persist commission row in new collection
+                    await Commission.create([
+                        {
+                            sender: buyerId,
+                            receiver: referrerUser._id,
+                            transaction: null, // will be updated after transaction is created
+                            level: level,
+                            amount: commissionAmount,
+                        }
+                    ], { session });
                 }
 
                 // Move to the next level in the chain
@@ -90,13 +94,18 @@ const createTransaction = async (req, res) => {
 
             // Step 3: Create a new transaction record
             const transaction = new Transaction({
-                buyer: buyerId,
+                receiver: buyerId,
                 type: "buy", // ✅ mark transaction as "buy"
                 amount: -amount, // ✅ Negative amount since money is going out
-                totalCommission,
-                commissions: commissionsArray,
             });
             await transaction.save({ session });
+
+            // Step 4: Backfill the transaction id into the created Commission rows
+            await Commission.updateMany(
+                { sender: buyerId, transaction: null },
+                { $set: { transaction: transaction._id } },
+                { session }
+            );
 
             // Send a success response after the transaction is committed
             res.status(201).json({
@@ -120,10 +129,10 @@ const createTransaction = async (req, res) => {
 const getRecentTransactions = async (req, res) => {
     try {
         // Fetch last 4 transactions for the logged-in user
-        const transactions = await Transaction.find({ buyer: req.user._id })
+        const transactions = await Transaction.find({ receiver: req.user._id })
             .sort({ createdAt: -1 })
             .limit(4) // ✅ Only show recent 4 transactions
-            .select('type amount createdAt totalCommission') // Select only needed fields
+            .select('type amount createdAt') // Select only needed fields
             .lean(); // For better performance
 
         res.json(transactions);
