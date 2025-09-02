@@ -259,11 +259,11 @@ const getCommissionsByDateRange = async (req, res) => {
         const start = startDate ? moment(startDate).startOf('day').toDate() : moment().startOf('day').toDate();
         const end = endDate ? moment(endDate).endOf('day').toDate() : moment().endOf('day').toDate();
 
-        const commissionData = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        // FIXED: Use Commission collection instead of Transaction
+        const commissionData = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: start, $lte: end }
                 }
             },
@@ -274,7 +274,7 @@ const getCommissionsByDateRange = async (req, res) => {
                         month: { $month: "$createdAt" },
                         day: { $dayOfMonth: "$createdAt" }
                     },
-                    totalCommission: { $sum: "$commissions.commissionAmount" },
+                    totalCommission: { $sum: "$amount" },
                     transactionCount: { $sum: 1 }
                 }
             },
@@ -312,39 +312,39 @@ const getCommissionsByDateRange = async (req, res) => {
     }
 };
 
-
-// controllers/commissionController.js
+// @desc    Get weekly commission data for last 7 days
+// @route   GET /api/commissions/summary
+// @access  Private
 const getWeeklyCommissions = async (req, res) => {
-  try {
-    const userId = req.user._id;
+    try {
+        const userId = req.user._id;
 
-    const last7Days = moment().subtract(6, "days").startOf("day").toDate();
+        const last7Days = moment().subtract(6, "days").startOf("day").toDate();
 
-    const data = await Transaction.aggregate([
-      { $unwind: "$commissions" },
-      {
-        $match: {
-          "commissions.user": userId,
-          createdAt: { $gte: last7Days }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-          totalCommission: { $sum: "$commissions.commissionAmount" },
-          transactionCount: { $sum: 1 }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
+        // FIXED: Use Commission collection instead of Transaction
+        const data = await Commission.aggregate([
+            {
+                $match: {
+                    receiver: userId,
+                    createdAt: { $gte: last7Days }
+                }
+            },
+            {
+                $group: {
+                    _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                    totalCommission: { $sum: "$amount" },
+                    transactionCount: { $sum: 1 }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
 
-    res.json(data);
-  } catch (error) {
-    console.error("Weekly commission error:", error);
-    res.status(500).json({ message: "Failed to fetch weekly commissions" });
-  }
+        res.json(data);
+    } catch (error) {
+        console.error("Weekly commission error:", error);
+        res.status(500).json({ message: "Failed to fetch weekly commissions" });
+    }
 };
-
 
 module.exports = {
     getTodayCommissionSummary,

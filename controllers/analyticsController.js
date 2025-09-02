@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const Commission = require('../models/Commission'); // Add this import
 const moment = require('moment');
 
 // @desc    Get user analytics data for personal dashboard
@@ -17,35 +18,35 @@ const getDashboardAnalytics = async (req, res) => {
 
         // 1. User's Total Purchases (buy transactions by this user)
         const salesData = await Transaction.aggregate([
-            { $match: { buyer: userId, type: "buy" } },
+            { $match: { receiver: userId, type: "buy" } },
             { $group: { _id: null, totalSales: { $sum: { $abs: "$amount" } } } }
         ]);
         const totalSales = salesData.length > 0 ? salesData[0].totalSales : 0;
 
         // 2. User's Total Revenue (commissions earned by this user from referrals)
-        const revenueData = await Transaction.aggregate([
-            { $unwind: "$commissions" },
-            { $match: { "commissions.user": userId } },
-            { $group: { _id: null, totalRevenue: { $sum: "$commissions.commissionAmount" } } }
+        // FIXED: Use Commission collection instead of Transaction.commissions
+        const revenueData = await Commission.aggregate([
+            { $match: { receiver: userId } },
+            { $group: { _id: null, totalRevenue: { $sum: "$amount" } } }
         ]);
         const totalRevenue = revenueData.length > 0 ? revenueData[0].totalRevenue : 0;
 
-        // 3. Today's Commission (for the clickable box) ✅
+        // 3. Today's Commission (for the clickable box)
         const startOfToday = moment().startOf('day').toDate();
         const endOfToday = moment().endOf('day').toDate();
 
-        const todayCommissionData = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        // FIXED: Use Commission collection
+        const todayCommissionData = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfToday, $lte: endOfToday }
                 }
             },
             {
                 $group: {
                     _id: null,
-                    todayCommission: { $sum: "$commissions.commissionAmount" }
+                    todayCommission: { $sum: "$amount" }
                 }
             }
         ]);
@@ -55,18 +56,18 @@ const getDashboardAnalytics = async (req, res) => {
         const startOfYesterday = moment().subtract(1, 'day').startOf('day').toDate();
         const endOfYesterday = moment().subtract(1, 'day').endOf('day').toDate();
 
-        const yesterdayCommissionData = await Transaction.aggregate([
-            { $unwind: "$commissions" },
+        // FIXED: Use Commission collection
+        const yesterdayCommissionData = await Commission.aggregate([
             { 
                 $match: { 
-                    "commissions.user": userId,
+                    receiver: userId,
                     createdAt: { $gte: startOfYesterday, $lte: endOfYesterday }
                 }
             },
             {
                 $group: {
                     _id: null,
-                    yesterdayCommission: { $sum: "$commissions.commissionAmount" }
+                    yesterdayCommission: { $sum: "$amount" }
                 }
             }
         ]);
@@ -89,20 +90,53 @@ const getDashboardAnalytics = async (req, res) => {
         const currentBalance = user.balance || 0;
 
         // 5. User's Transaction Count
-        const transactionCount = await Transaction.countDocuments({ buyer: userId, type: "buy" });
+        const transactionCount = await Transaction.countDocuments({ receiver: userId, type: "buy" });
 
         // Weekly data ranges
         const startOfWeek = moment().startOf('isoWeek');
         const startOfLastWeek = moment().subtract(1, 'weeks').startOf('isoWeek');
 
-        // Helper function to get weekly grouped data
-        const getWeeklyData = async (pipeline) => {
+        // Helper function to get weekly grouped data for purchases
+        const getWeeklyPurchaseData = async (startDate, endDate) => {
             return Transaction.aggregate([
-                ...pipeline,
+                { $match: { receiver: userId, type: "buy", createdAt: { $gte: startDate, $lt: endDate } } },
                 {
                     $group: {
                         _id: { $dayOfWeek: "$createdAt" },
-                        total: { $sum: "$amountToSum" }
+                        total: { $sum: { $abs: "$amount" } }
+                    }
+                },
+                {
+                    $project: {
+                        _id: 0,
+                        day: {
+                            $switch: {
+                                branches: [
+                                    { case: { $eq: ["$_id", 1] }, then: "Sun" },
+                                    { case: { $eq: ["$_id", 2] }, then: "Mon" },
+                                    { case: { $eq: ["$_id", 3] }, then: "Tue" },
+                                    { case: { $eq: ["$_id", 4] }, then: "Wed" },
+                                    { case: { $eq: ["$_id", 5] }, then: "Thu" },
+                                    { case: { $eq: ["$_id", 6] }, then: "Fri" },
+                                    { case: { $eq: ["$_id", 7] }, then: "Sat" }
+                                ],
+                                default: "N/A"
+                            }
+                        },
+                        total: 1
+                    }
+                }
+            ]);
+        };
+
+        // Helper function to get weekly grouped data for commissions
+        const getWeeklyCommissionData = async (startDate, endDate) => {
+            return Commission.aggregate([
+                { $match: { receiver: userId, createdAt: { $gte: startDate, $lt: endDate } } },
+                {
+                    $group: {
+                        _id: { $dayOfWeek: "$createdAt" },
+                        total: { $sum: "$amount" }
                     }
                 },
                 {
@@ -129,30 +163,16 @@ const getDashboardAnalytics = async (req, res) => {
         };
 
         // Purchases - Current Week
-        const currentWeekPurchases = await getWeeklyData([
-            { $match: { buyer: userId, type: "buy", createdAt: { $gte: startOfWeek.toDate() } } },
-            { $addFields: { amountToSum: { $abs: "$amount" } } }
-        ]);
+        const currentWeekPurchases = await getWeeklyPurchaseData(startOfWeek.toDate(), new Date());
 
         // Purchases - Last Week
-        const lastWeekPurchases = await getWeeklyData([
-            { $match: { buyer: userId, type: "buy", createdAt: { $gte: startOfLastWeek.toDate(), $lt: startOfWeek.toDate() } } },
-            { $addFields: { amountToSum: { $abs: "$amount" } } }
-        ]);
+        const lastWeekPurchases = await getWeeklyPurchaseData(startOfLastWeek.toDate(), startOfWeek.toDate());
 
         // Commissions - Current Week
-        const currentWeekCommissions = await getWeeklyData([
-            { $unwind: "$commissions" },
-            { $match: { "commissions.user": userId, createdAt: { $gte: startOfWeek.toDate() } } },
-            { $addFields: { amountToSum: "$commissions.commissionAmount" } }
-        ]);
+        const currentWeekCommissions = await getWeeklyCommissionData(startOfWeek.toDate(), new Date());
 
         // Commissions - Last Week
-        const lastWeekCommissions = await getWeeklyData([
-            { $unwind: "$commissions" },
-            { $match: { "commissions.user": userId, createdAt: { $gte: startOfLastWeek.toDate(), $lt: startOfWeek.toDate() } } },
-            { $addFields: { amountToSum: "$commissions.commissionAmount" } }
-        ]);
+        const lastWeekCommissions = await getWeeklyCommissionData(startOfLastWeek.toDate(), startOfWeek.toDate());
 
         // Merge data into chart-friendly format
         const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -178,7 +198,7 @@ const getDashboardAnalytics = async (req, res) => {
                     change: '+15%', // static for now
                     trend: 'up'
                 },
-                todayCommission: { // ✅ New field for today's commission
+                todayCommission: {
                     value: todayCommission,
                     change: todayCommissionChange,
                     trend: todayCommissionTrend
@@ -247,7 +267,7 @@ const getSalesAnalytics = async (req, res) => {
             { $match: { type: "buy" } },
             {
                 $group: {
-                    _id: "$buyer",
+                    _id: "$receiver", // FIXED: Changed from "buyer" to "receiver"
                     totalPurchases: { $sum: { $abs: "$amount" } },
                     transactionCount: { $sum: 1 }
                 }
@@ -286,6 +306,7 @@ const getSalesAnalytics = async (req, res) => {
         });
     } 
 };
+
 module.exports = {
     getDashboardAnalytics,
     getSalesAnalytics
