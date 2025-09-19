@@ -32,10 +32,22 @@ connectDB();
 const app = express();
 
 // Use CORS middleware to allow requests from your frontend
+const allowedOrigins = [
+  "https://mlm-frontend-uxmz.vercel.app",
+  "https://mlm-frontend-seven.vercel.app"
+];
+
 app.use(cors({
-  origin: 'https://mlm-frontend-uxmz.vercel.app',
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   credentials: true
 }));
+
 // Body parser middleware to handle JSON data
 app.use(express.json());
 
