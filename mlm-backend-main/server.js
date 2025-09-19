@@ -34,9 +34,8 @@ const app = express();
 // Use CORS middleware to allow requests from your frontend
 // Use CORS middleware to allow requests from your frontend
 const allowedOrigins = [
-  "http://localhost:3000", // local dev
+  "http://localhost:8000", // local dev
   "https://mlm-frontend-seven.vercel.app", // your new frontend
-  "https://mlm-frontend-uxmz.vercel.app"   // old frontend (optional)
 ];
 
 app.use(cors({
